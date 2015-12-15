@@ -11,6 +11,8 @@ class La_Yandex_Feed_Core {
         add_action('init', array($this,'custom_query_vars') );
         add_action('template_redirect', array($this, 'custom_templates_redirect'));
 		add_action('parse_query', array($this, 'custom_request'));
+		add_filter( 'status_header', array($this, 'set_empty_feed_20ok_status'), 10, 2 );
+
 				
 		/* formatting */
 		add_filter('the_title_rss', array($this, 'full_text_formatting'), 15);
@@ -29,8 +31,18 @@ class La_Yandex_Feed_Core {
 		
 		
     }
-		
-		
+	
+	public function set_empty_feed_20ok_status($status_header, $header) {
+		global $wp_query;
+		$qv = get_query_var('yandex_feed'); 
+		if('news' == $qv){
+			if((int) $header == 404) {
+				return status_header( 200 );
+			}
+		}
+		return $status_header;			
+	}
+	
 	/** instance */
     public static function get_instance(){
         
@@ -145,7 +157,7 @@ class La_Yandex_Feed_Core {
 		}
 		
 	}
-	
+
 	public function custom_templates_redirect(){
 		global $wp_query;
         
@@ -173,8 +185,12 @@ Allow: /yandex/news/
 	}
 		
 	
-	/** formatting */		
+	/** formatting */
 	function full_text_formatting($text){
+	
+		$pattern = '\[(\[?)(embed|wp_caption|caption|gallery|playlist|audio|video)(?![\w-])([^\]\/]*(?:\/(?!\])[^\]\/]*)*?)(?:(\/)\]|\](?:([^\[]*+(?:\[(?!\/\2\])[^\[]*+)*+)\[\/\2\])?)(\]?)';
+		$text = preg_replace_callback( "/$pattern/s", 'strip_shortcode_tag', $text );
+		
 		global $wp_query;
 		
 		if(empty($wp_query->query_vars['yandex_feed']))
@@ -186,9 +202,11 @@ Allow: /yandex/news/
 		$text = preg_replace('/\s\s+/', ' ', $text);
 		$text = preg_replace('/(\r|\n|\r\n){3,}/', '', $text);
 		
+		
+		
 		return self::_valid_characters($text);
 	}
-
+	
 	static function _valid_characters($text) {
 		
 		$text = htmlentities ($text, ENT_QUOTES, 'UTF-8', false);
@@ -229,20 +247,30 @@ Allow: /yandex/news/
 		global $post;
 		
 		$enclosure = $matches = $res = array();
-		$out = do_shortcode($post->post_content); 
-		//preg_match_all('!http://.+\.(?:jpe?g|png|gif)!Ui' , $out , $matches);
-		preg_match_all('!<img(.*)src(.*)=(.*)"(.*)"!U', $out, $matches);
-			
+		$thumb_id = get_post_thumbnail_id($post->ID);
+		if(!empty($thumb_id)){
+			$enclosure[0] = wp_get_attachment_url($thumb_id);
+		}
 		
-		if(!isset($matches[4]) || empty($matches)){
-			$thumb_id = get_post_thumbnail_id($post->ID);
-			if(!empty($thumb_id)){
-				$enclosure[0] = wp_get_attachment_url($thumb_id);
+		$out = do_shortcode($post->post_content);
+		if(preg_match('/youtube\.com/', $post->post_content) || preg_match('/youtu\.be/', $post->post_content)) {
+			preg_match_all('#\bhttps?://[^\s()<>]+(?:\([\w\d]+\)|([^[:punct:]\s]|/))#', $post->post_content, $urls_match);
+			if($urls_match && count($urls_match) && $urls_match[0]) {
+				foreach($urls_match[0] as $url) {
+					$thumbnail_url = self::get_youtube_thumbnail_url($url);
+					if($thumbnail_url) {
+						$enclosure[] = $thumbnail_url;
+					}
+				}
 			}
 		}
 		else {
-			$enclosure = $matches[4];
-		}
+			//preg_match_all('!http://.+\.(?:jpe?g|png|gif)!Ui' , $out , $matches);
+			preg_match_all('!<img(.*)src(.*)=(.*)"(.*)"!U', $out, $matches);
+			if(isset($matches[4]) && !empty($matches)){
+				$enclosure = array_merge($enclosure, $matches[4]);
+			}
+		} 
 		
 		if(empty($enclosure))
 			return $enclosure;
@@ -297,7 +325,8 @@ Allow: /yandex/news/
 		//modify $res to be able add thumbnails
 		$return = array();
 		if(!empty($res)){ foreach($res as $i => $url) {
-			$return[] = array('url' => $url, 'thumb' => '');
+			$thumbnail_url = self::get_youtube_thumbnail_url($url);
+			$return[] = array('url' => $url, 'thumb' => $thumbnail_url);
 		}}
 		
 		return apply_filters('layf_video_embeds', $return, $post->ID);
@@ -331,6 +360,58 @@ Allow: /yandex/news/
 		//var_dump($links);		
 		
 		return $links;
+	}
+	
+	static function get_proper_category($post_id) {
+		$terms = get_option('layf_filter_terms', '');			
+		$filter_tax = '';
+		if(!empty($terms)){
+			$filter_tax = $tax = get_option('layf_filter_taxonomy', 'category');
+			$terms = array_map('intval', explode(',', $terms));
+			$query->query_vars['tax_query'][] = array(
+				'taxonomy' => $tax,
+				'field' => 'id',
+				'terms' => $terms
+			);
+		}
+	
+		$category_tax = apply_filters('layf_category_taxonomy', 'category', $post_id);
+		$category = wp_get_object_terms($post_id, $category_tax);
+		
+		$category_name = '';
+		if($filter_tax && $filter_tax == $category_tax && is_array($category) && !empty($terms)) {
+			foreach($category as $cat) {
+				if(array_search($cat->term_id, $terms) !== false && $cat->slug != 'uncategorized') {
+					$category_name = $cat->name;
+					break;
+				}
+			}
+		}
+		
+		if(empty($category_name)) {
+			if(count($category) > 1 && $category[0]->slug == 'uncategorized')
+				$category = $category[1]->name;
+			else
+				$category = $category ? reset($category)->name : '-';
+		}
+		else {
+			$category = $category_name;
+		}
+
+		$category = apply_filters('layf_category', $category, get_the_ID());
+		return $category;
+	}
+	
+	static function get_youtube_thumbnail_url($url) {
+		$ret = '';
+		if(preg_match('/youtube\.com/', $url) || preg_match('/youtu\.be/', $url)) {
+			preg_match("#(?<=vi\/)[^&\n]+|(?<=v\/)[^&\n]+|(?<=user\/)[^&\n]+|(?<=embed\/)[^&\n]+|(?<=v=)[a-zA-Z0-9-]+(?=&)|(?<=v\/)[^&\n]+(?=\?)|(?<=v=)[^&\n]+|(?<=youtu.be/)[^&\n]+#", $url, $youtube_id_matches);
+			if($youtube_id_matches && count($youtube_id_matches)) {
+				$youtube_video_id = $youtube_id_matches[0];
+				$ret = 'https://img.youtube.com/vi/' . $youtube_video_id . '/1.jpg';
+			}
+		}
+		return $ret;
 	}
 	
 } //class
