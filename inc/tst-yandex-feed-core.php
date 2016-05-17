@@ -112,7 +112,14 @@ class La_Yandex_Feed_Core {
 			$pt = $this->get_supported_post_types();			
 			
 			$query->query_vars['post_type'] = $pt;
-			$query->query_vars['posts_per_page'] = -1;
+			
+			$feed_items_limit_option = (int)get_option('layf_feed_items_limit', '');
+			if($feed_items_limit_option > 0) {
+			    $query->query_vars['posts_per_page'] = $feed_items_limit_option;
+			}
+			else {
+			    $query->query_vars['posts_per_page'] = -1;
+			}
 			
 			$limit = strtotime('- 8 days'); //Limited by Yandex rules
 			$query->query_vars['date_query'] = array(
@@ -223,9 +230,19 @@ Allow: /yandex/news/
 	
 	/** template helpers */
 	static function get_the_content_feed() {
+	    
+		$post = get_post();
+		$content = $post->post_content;
 		
-		$post = get_post();		
-		$content = str_replace(']]>', ']]&gt;', $post->post_content);
+		if(get_option('layf_remove_teaser_from_fulltext', '')) {
+		    if ( preg_match( '/<!--more(.*?)?-->/', $content, $matches ) ) {
+		        $content_parts = explode( $matches[0], $content, 2 );
+		        if(count($content_parts) > 1 && !empty($content_parts[1])) {
+		            $content = $content_parts[1];
+		        }
+		    }
+		}
+		$content = str_replace(']]>', ']]&gt;', $content);
 		
 		add_filter('img_caption_shortcode', 'layf_filter_image_caption', 20, 3); //filter caption text
 		add_filter( 'layf_content_feed', array( $GLOBALS['wp_embed'], 'autoembed' ), 8 ); //embed media to HTML
@@ -235,24 +252,43 @@ Allow: /yandex/news/
 		add_filter( 'layf_content_feed', 'convert_chars'      );
 		add_filter( 'layf_content_feed', 'wpautop'            );
 		add_filter( 'layf_content_feed', 'shortcode_unautop'  );
-		add_filter( 'layf_content_feed', 'do_shortcode'       );		
-        		
+		add_filter( 'layf_content_feed', 'do_shortcode'       );
+		
+		if(get_option('layf_remove_shortcodes', '')) {
+		    add_filter( 'layf_content_feed', 'strip_all_shortcodes'   );
+		}
 		
 		return apply_filters('layf_content_feed', $content);		
 	}
 	
+	static function custom_the_excerpt_rss() {
+	    if(get_option('layf_remove_shortcodes', '')) {
+	        add_filter( 'the_excerpt_rss', 'strip_all_shortcodes' );
+	    }
+	    the_excerpt_rss();
+	}
 	
 	/* @to-do: add support for support video files */
 	static function item_enclosure(){ 
 		global $post;
 		
 		$enclosure = $matches = $res = array();
-		$thumb_id = get_post_thumbnail_id($post->ID);
-		if(!empty($thumb_id)){
-			$enclosure[0] = wp_get_attachment_url($thumb_id);
+		
+		if(get_option('layf_include_post_thumbnail')) {
+		    $thumb_id = get_post_thumbnail_id($post->ID);
+		    if(!empty($thumb_id)){
+		        $enclosure[0] = wp_get_attachment_url($thumb_id);
+		    }
 		}
 		
 		$out = do_shortcode($post->post_content);
+		
+		//preg_match_all('!http://.+\.(?:jpe?g|png|gif)!Ui' , $out , $matches);
+		preg_match_all('!<img(.*)src(.*)=(.*)"(.*)"!U', $out, $matches);
+		if(isset($matches[4]) && !empty($matches)){
+		    $enclosure = array_merge($enclosure, $matches[4]);
+		}
+		
 		if(preg_match('/youtube\.com/', $post->post_content) || preg_match('/youtu\.be/', $post->post_content)) {
 			preg_match_all('#\bhttps?://[^\s()<>]+(?:\([\w\d]+\)|([^[:punct:]\s]|/))#', $post->post_content, $urls_match);
 			if($urls_match && count($urls_match) && $urls_match[0]) {
@@ -264,17 +300,16 @@ Allow: /yandex/news/
 				}
 			}
 		}
-		else {
-			//preg_match_all('!http://.+\.(?:jpe?g|png|gif)!Ui' , $out , $matches);
-			preg_match_all('!<img(.*)src(.*)=(.*)"(.*)"!U', $out, $matches);
-			if(isset($matches[4]) && !empty($matches)){
-				$enclosure = array_merge($enclosure, $matches[4]);
-			}
-		} 
 		
 		if(empty($enclosure))
 			return $enclosure;
 				
+		$enclosure = array_unique($enclosure);
+		foreach($enclosure as $i => $img){
+		    $enclosure[$i] = preg_replace('/-\d+x\d+(\.\w+)$/', '$1', $img);
+		}
+		$enclosure = array_unique($enclosure);
+		
 		foreach($enclosure as $i => $img){
 			
 			$mime = self::_get_mime($img);
@@ -405,10 +440,10 @@ Allow: /yandex/news/
 	static function get_youtube_thumbnail_url($url) {
 		$ret = '';
 		if(preg_match('/youtube\.com/', $url) || preg_match('/youtu\.be/', $url)) {
-			preg_match("#(?<=vi\/)[^&\n]+|(?<=v\/)[^&\n]+|(?<=user\/)[^&\n]+|(?<=embed\/)[^&\n]+|(?<=v=)[a-zA-Z0-9-]+(?=&)|(?<=v\/)[^&\n]+(?=\?)|(?<=v=)[^&\n]+|(?<=youtu.be/)[^&\n]+#", $url, $youtube_id_matches);
+			preg_match("#(?<=vi\/)[^&?/\n]+|(?<=v\/)[^&?/\n]+|(?<=user\/)[^&?/\n]+|(?<=embed\/)[^&?/\n]+|(?<=v=)[a-zA-Z0-9-]+(?=&)|(?<=v\/)[^&?/\n]+(?=\?)|(?<=v=)[^&?/\n]+|(?<=youtu.be/)[^&?/\n]+#", $url, $youtube_id_matches);
 			if($youtube_id_matches && count($youtube_id_matches)) {
 				$youtube_video_id = $youtube_id_matches[0];
-				$ret = 'https://img.youtube.com/vi/' . $youtube_video_id . '/1.jpg';
+				$ret = 'https://img.youtube.com/vi/' . $youtube_video_id . '/0.jpg';
 			}
 		}
 		return $ret;
@@ -683,4 +718,10 @@ function layf_filter_image_caption($out, $attr, $content) {
 		
 	return $content;			
 }
+
+function strip_all_shortcodes($text){
+    $text = preg_replace("/\[[^\]]+\]/", '', $text);  #strip shortcode
+    return $text;
+}
+
 ?>

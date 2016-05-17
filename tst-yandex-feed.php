@@ -2,7 +2,7 @@
 /*
 Plugin Name: Yandex.News Feed by Teplitsa
 Description: The plugin creates feed for Yandex.News service
-Version: 1.8.3
+Version: 1.8.6
 Author: Teplitsa
 Author URI: http://te-st.ru/
 Text Domain: layf
@@ -14,7 +14,7 @@ Contributors:
 	Lev Zvyagincev (ahaenor@gmail.com)
 
 License: GPLv2 or later
-	Copyright (C) 2012-2014 by Teplitsa of Social Technologies (http://te-st.ru).
+	Copyright (C) 2012-2016 by Teplitsa of Social Technologies (http://te-st.ru).
 
 	GNU General Public License, Free Software Foundation <http://www.gnu.org/licenses/gpl-2.0.html>
 
@@ -37,7 +37,7 @@ if(!defined('ABSPATH')) die; // Die if accessed directly
 
 // Plugin version:
 if( !defined('LAYF_VERSION') )
-    define('LAYF_VERSION', '1.8.2');
+    define('LAYF_VERSION', '1.8.5');
 	
 // Plugin DIR, with trailing slash:
 if( !defined('LAYF_PLUGIN_DIR') )
